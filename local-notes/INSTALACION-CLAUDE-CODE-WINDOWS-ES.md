@@ -97,7 +97,8 @@ Niveles de estado:
 | Conectado | Sí (`claude mcp list`: `Connected`; `doctor`: registro y skill alineados) |
 | Prueba funcional superada | Sí, **solo** para el análisis estático de JavaScript/Electron |
 | Invocación desde una sesión interactiva de Claude Code | **No realizada** (requiere reiniciar Claude Code) |
-| Motores nativos (Ghidra, IDA, JADX, Kuna, Hopper) | No instalados ni probados |
+| Motor nativo Ghidra 12.1.4 | Instalado, configurado y probado con un binario x64 pequeño (ver §10) |
+| Motores IDA, JADX, Kuna y Hopper | No instalados ni probados |
 
 ## 7. Actualizar
 
@@ -146,6 +147,49 @@ Si algo sale mal, restaura `%USERPROFILE%\.claude.json` desde `.claude.json.tric
 - Análisis de binarios nativos: requiere **Ghidra** (en Windows x64 es experimental: Ghidra 12.1.x, JDK 21+, `JAVA_HOME` y `GHIDRA_INSTALL_DIR`), **IDA** (licencia comercial propia) o **Hopper** (no disponible en Windows). REA no los instala.
 - **JADX** (Android) y **Kuna** requieren un JAR/ejecutable aportado por el usuario (`REA_JADX_MCP_JAR`, `REA_KUNA_COMMAND`).
 - **Frida** (instrumentación dinámica) es una dependencia opcional de npm que se omitió a propósito; esas funciones no están disponibles.
-- `doctor` informa `environment_healthy: false` porque no hay motores nativos configurados; es lo esperado en esta instalación mínima.
+- Antes de añadir Ghidra, `doctor` informaba `environment_healthy: false` porque no había motores nativos configurados; el resultado depende de los proveedores y clientes incluidos en el alcance.
 - Coste: el núcleo es gratuito (MIT). IDA y otras herramientas comerciales requieren licencia propia. No se ha contratado nada.
 - El primer arranque del MCP descarga dependencias a la caché de npx; si Claude Code muestra un fallo de conexión en frío, repite `claude mcp list` (la caché ya estará caliente).
+
+## 10. Ghidra (motor nativo), añadido el 2026-10-25
+
+Instalado siguiendo `docs/installation.md#ghidra` y `docs/windows-ghidra-p0.md`. El soporte de Ghidra en Windows es **experimental** (límite «P0», solo lectura).
+
+| Componente | Detalle |
+|---|---|
+| Ghidra | 12.1.4 PUBLIC, la versión con la que REA verificó su puente. REA 6.7.0 solo acepta 12.1.x, por eso no se usó la 12.2. |
+| JDK | Eclipse Temurin 21.0.12.1+1, JDK completo con `javac`, 64 bits |
+| Ubicación | `C:\dev\rea-tools\ghidra_12.1.4_PUBLIC` y `C:\dev\rea-tools\jdk-21`, fuera de REA y de otros proyectos |
+| Descargas conservadas | `C:\dev\rea-tools\downloads\` (se pueden borrar) |
+
+**Origen y verificación.** Ghidra viene de las releases oficiales de `NationalSecurityAgency/ghidra`. Su SHA-256 `ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db` coincide con el publicado en las notas de la release y con el digest de GitHub. El JDK viene de `adoptium/temurin21-binaries`. Su SHA-256 `f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e` coincide con la API de Adoptium.
+
+**Configuración.** No se tocó el PATH ni ninguna variable global de Windows. Las tres variables viven solo en la entrada `rea` de `%USERPROFILE%\.claude.json`:
+
+```text
+GHIDRA_INSTALL_DIR=C:\dev\rea-tools\ghidra_12.1.4_PUBLIC
+JAVA_HOME=C:\dev\rea-tools\jdk-21
+REA_ANALYSIS_PROVIDER=ghidra
+```
+
+Comandos comprobados (con las variables definidas solo en esa sesión de PowerShell):
+
+```powershell
+npx -y rea-agents@6.7.0 doctor --provider ghidra --json
+npx -y rea-agents@6.7.0 setup --client claude_code --dry-run --json   # el plan solo cambia la entrada rea
+npx -y rea-agents@6.7.0 setup --client claude_code --yes --json
+```
+
+Antes de aplicar se hizo la copia `%USERPROFILE%\.claude.json.tricore-backup-20261025-ghidra`. Reinicia Claude Code para que cargue las variables nuevas.
+
+**Verificación.**
+- `doctor --provider ghidra`: todas las comprobaciones en verde (versión 12.1.4, `analyzeHeadless.bat`, decompilador nativo `win_x86_64`, JDK 21.0.12.1 de 64 bits y controles nativos de Windows).
+- `claude mcp get rea`: `Connected` tras el cambio.
+- Prueba nativa real por MCP sobre `choice.exe`, una utilidad de Windows de 57 344 bytes, x64 y firmada por Microsoft, copiada a `C:\dev\rea-tools\samples`. `open_binary` respondió en 2 s y el análisis automático en frío tardó unos 30 s. `list_procedures` devolvió 174 procedimientos (80 externos y 86 internos) y `list_strings` 129 cadenas. `analyze_function` sobre `entry` devolvió pseudocódigo en C (`void entry(void) { FUN_140001734(); FUN_140001140(); return; }`), 4 instrucciones y 2 llamados.
+- Una primera ejecución falló por un error del script de prueba, no de REA. Una segunda eligió una función externa, que no cuenta como decompilación. La tercera, sobre una función interna, es la que vale.
+
+**Qué no está probado.** Binarios grandes (la documentación avisa de que el primer análisis puede tardar minutos y de que el límite de tiempo del cliente puede ser corto; se ajusta con `REA_GHIDRA_STARTUP_TIMEOUT_MS`), DLL, ARM y DOS, y la invocación desde una sesión interactiva de Claude Code.
+
+**Límites.** En Windows REA solo lee: no renombra ni anota funciones y no controla la interfaz gráfica de Ghidra. Ghidra no se actualiza solo y REA 6.7.0 solo admite 12.1.x.
+
+**Quitar Ghidra.** Restaura `.claude.json.tricore-backup-20261025-ghidra` (REA sin Ghidra) o borra el bloque `env` de `rea` en `~/.claude.json`. Después borra `C:\dev\rea-tools\ghidra_12.1.4_PUBLIC` y `C:\dev\rea-tools\jdk-21`.
